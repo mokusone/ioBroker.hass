@@ -254,7 +254,8 @@
     "password": "",
     "secure": false,
     "excludePatterns": "*.iob_*__*\n*.knx_*\n*.ha_*__*\n*.ga_*__*\n*.sc_*__*",
-    "verboseFilterLog": false
+    "verboseFilterLog": false,
+    "cleanupExcludedOnStart": false
   },
   "protectedNative": [
     "password"
