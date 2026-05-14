@@ -1,11 +1,14 @@
 import { Adapter, type AdapterOptions } from '@iobroker/adapter-core';
 import HASS from './lib/hass';
+import { isExcluded } from './lib/entityFilter';
 
 interface HassAdapterConfig {
     host: string;
     port: number;
     password: string;
     secure: boolean;
+    excludePatterns: string;
+    verboseFilterLog: boolean;
 }
 
 interface HassEntity {
@@ -188,6 +191,8 @@ class HassAdapter extends Adapter {
     private delayTimeout: ReturnType<typeof setTimeout> | null = null;
     private syncDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
     private stopped: boolean = false;
+    private excludePatterns: string[] = [];
+    private initialSyncCompleted: boolean = false;
 
     public constructor(options: Partial<AdapterOptions> = {}) {
         super({
@@ -454,10 +459,20 @@ class HassAdapter extends Adapter {
         const objs: (ioBroker.ChannelObject | ioBroker.StateObject)[] = [];
         const states: { id: string; lc?: number; ts?: number; val: ioBroker.StateValue; ack: boolean }[] = [];
         const expectedObjects = new Set<string>();
+        let excludedCount = 0;
+        const excludedIds: string[] = [];
 
         for (let e = 0; e < entities.length; e++) {
             const entity = entities[e];
             if (!entity) {
+                continue;
+            }
+
+            if (isExcluded(entity.entity_id, this.excludePatterns)) {
+                excludedCount++;
+                if (this.config.verboseFilterLog && !this.initialSyncCompleted) {
+                    excludedIds.push(entity.entity_id);
+                }
                 continue;
             }
 
@@ -652,11 +667,39 @@ class HassAdapter extends Adapter {
             }
             this.log.info(`Synchronization completed: ${changes.join(', ')}`);
         }
+
+        if (excludedCount > 0) {
+            this.log.info(
+                `Entity filter excluded ${excludedCount} entit${excludedCount === 1 ? 'y' : 'ies'} from sync`,
+            );
+        }
+
+        if (excludedIds.length > 0) {
+            for (const id of excludedIds) {
+                this.log.info(`Entity filter excluded: ${id}`);
+            }
+        }
+
+        this.initialSyncCompleted = true;
     }
 
     private async main(): Promise<void> {
         this.config.host ||= '127.0.0.1';
         this.config.port = parseInt(String(this.config.port), 10) || 8123;
+
+        const rawPatterns = (this.config.excludePatterns || '').toString();
+        this.excludePatterns = rawPatterns
+            .split('\n')
+            .map(s => s.trim())
+            .filter(line => line.length > 0 && !line.startsWith('#'));
+
+        if (this.excludePatterns.length === 0) {
+            this.log.info('Entity filter inactive (no exclude patterns configured)');
+        } else {
+            this.log.info(
+                `Entity filter active: ${this.excludePatterns.length} pattern(s) loaded: ${this.excludePatterns.join(', ')}`,
+            );
+        }
 
         await this.setStateAsync('info.connection', false, true);
 
@@ -667,6 +710,11 @@ class HassAdapter extends Adapter {
         this.hass.on('state_changed', entity => {
             this.log.debug(`HASS-Message: State Changed: ${JSON.stringify(entity)}`);
             if (!entity || typeof entity.entity_id !== 'string') {
+                return;
+            }
+
+            if (isExcluded(entity.entity_id, this.excludePatterns)) {
+                this.log.debug(`Entity filter: ignored state_changed for ${entity.entity_id}`);
                 return;
             }
 
